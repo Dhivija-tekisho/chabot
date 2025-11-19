@@ -286,6 +286,108 @@ If any field is missing, leave it as an empty string. Return the result as a JSO
     }
 
     const relevantChunks = await retrieveRelevantChunks(question, 8);
+
+    // =======================
+    // UNIVERSAL TOPIC REDIRECTION (For ALL Topics)
+    // =======================
+    const stopWords = new Set([
+      "the","and","for","that","this","with","from","are","was","were","has","had","have",
+      "our","your","their","its","but","not","you","we","they","she","him","her","his",
+      "can","may","will","shall","could","would","should","a","an","in","of","on","at",
+      "to","is","as","by","it","or","be","us","about","more","into","also","tekisho","infotech",
+      "what","how","why","when","where","which","who","does","do","did","can","will","would",
+      "tell","me","i","am","my","you","your","get","give","know","need","want","like","use",
+      "service","services","company","companies","business","businesses","technology","technologies"
+    ]);
+
+    // NEW APPROACH: Find question words that appear in knowledge base
+    const questionWords = question.toLowerCase().split(/\W+/).filter(w => w.length >= 3 && !stopWords.has(w));
+    
+    const topicCandidates = {};
+    for (const qWord of questionWords) {
+      let totalCount = 0;
+      for (const chunk of relevantChunks) {
+        const chunkText = chunk.text.toLowerCase();
+        const wordCount = (chunkText.match(new RegExp(`\\b${qWord}\\b`, 'g')) || []).length;
+        totalCount += wordCount;
+      }
+      if (totalCount > 0) {
+        topicCandidates[qWord] = totalCount;
+      }
+    }
+
+    // Also get frequent words from chunks that match question context
+    const chunkWords = {};
+    for (const chunk of relevantChunks) {
+      const words = chunk.text.toLowerCase().split(/\W+/);
+      for (const w of words) {
+        if (w.length < 3 || stopWords.has(w)) continue;
+        chunkWords[w] = (chunkWords[w] || 0) + 1;
+      }
+    }
+
+    // Combine and prioritize question words
+    const combinedTopics = { ...chunkWords };
+    for (const [word, count] of Object.entries(topicCandidates)) {
+      combinedTopics[word] = (combinedTopics[word] || 0) + count * 3; // Boost question words
+    }
+
+    const sortedTopics = Object.entries(combinedTopics)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+
+    const mainTopic = sortedTopics[0]?.[0] || null;
+
+    // Enhanced matching logic
+    const topicMatch = mainTopic && questionWords.includes(mainTopic.toLowerCase());
+    const partialMatch = mainTopic && question.toLowerCase().includes(mainTopic.toLowerCase());
+    
+    console.log(`🎯 Topic Analysis: questionWords=[${questionWords.join(', ')}], mainTopic="${mainTopic}", topicMatch=${topicMatch}, partialMatch=${partialMatch}`);
+
+    if (mainTopic && (topicMatch || partialMatch) && relevantChunks.length > 0) {
+      console.log(`✅ Topic redirection triggered for: ${mainTopic}`);
+
+      // Short 1-line real definition
+      const defResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "user",
+            content: `Give a short one-line definition for "${mainTopic}" in under 20 words. No extra text, just the definition.`,
+          },
+        ],
+        temperature: 0.2
+      });
+
+      const topicDefinition = defResponse.choices[0].message.content.trim();
+
+      // Create exactly 5 subtopics
+      const subtopics = sortedTopics
+        .map(t => t[0])
+        .filter(t => t !== mainTopic && t.length > 2)
+        .slice(0, 5)
+        .map(t => `${mainTopic.toUpperCase()} ${t.charAt(0).toUpperCase() + t.slice(1)}`);
+
+      // Ensure we have at least some subtopics
+      if (subtopics.length === 0) {
+        subtopics.push(
+          `${mainTopic.toUpperCase()} Services`,
+          `${mainTopic.toUpperCase()} Solutions`, 
+          `${mainTopic.toUpperCase()} Implementation`,
+          `${mainTopic.toUpperCase()} Support`,
+          `${mainTopic.toUpperCase()} Strategy`
+        );
+      }
+
+      return res.json({
+        answer:
+          `${topicDefinition}\n` +
+          `${mainTopic.toUpperCase()} is one of Tekisho's key focus areas. ` +
+          `Would you like to explore more about:\n${subtopics.slice(0, 5).join(", ")}?`,
+        source: "topic_redirect"
+      });
+    }
+
     const combinedContext = relevantChunks.map((c) => `${c.source}:\n${c.text}`).join("\n\n");
 
     const ragPrompt = `

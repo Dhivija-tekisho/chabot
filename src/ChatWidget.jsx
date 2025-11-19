@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Send, X, Volume2, StopCircle, Mic, MessageSquare, FileText } from "lucide-react";
+import { Send, X, Volume2, StopCircle, MessageSquare, FileText, Mic, MicOff } from "lucide-react";
+
 
 const SpeechRecognition =
   window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -13,8 +14,18 @@ export default function ChatWidget() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [activeTab, setActiveTab] = useState("chat"); // "chat", "voice", "feedback"
-  const [feedback, setFeedback] = useState("Please share your feedback about our services and how we can improve your experience.");
+  const [feedback, setFeedback] = useState("");
   const messagesEndRef = useRef(null);
+  const [isLiveMode, setIsLiveMode] = useState(false);
+  const suggestedQuestions = [
+  "What services does your company offer?",
+  "How can I contact support?",
+  "Can you tell me about pricing?",
+  "What are your business hours?",
+  "Where are you located?",
+];
+
+
 
   // 🕓 Dynamic greeting
   const getGreeting = () => {
@@ -47,6 +58,16 @@ export default function ChatWidget() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // 🧹 Cleanup: Stop mic & speech on unmount
+useEffect(() => {
+  return () => {
+    window.speechSynthesis.cancel();
+    setIsLiveMode(false);
+    setIsListening(false);
+  };
+}, []);
+
+
   // --- Send message handler ---
   const handleSend = async (customQuestion = null) => {
     const messageToSend = customQuestion || input;
@@ -60,7 +81,6 @@ export default function ChatWidget() {
 
     try {
       const pageText = document.body.innerText.slice(0, 8000);
-
       const response = await fetch("http://localhost:5000/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -78,13 +98,12 @@ export default function ChatWidget() {
       const botMessage = { id: Date.now(), type: "assistant", content: aiReply };
       setMessages((prev) => [...prev, botMessage]);
 
-      // 🎤 Speak reply automatically (female voice)
+      // 🎤 Speak reply automatically
       if ("speechSynthesis" in window) {
         const utterance = new SpeechSynthesisUtterance(aiReply);
         utterance.lang = "en-US";
         utterance.rate = 1.0;
         utterance.pitch = 1.0;
-
         const voices = window.speechSynthesis.getVoices();
         const femaleVoice =
           voices.find((v) =>
@@ -138,284 +157,419 @@ export default function ChatWidget() {
     }
   };
 
-  // --- Voice input handler ---
-  const handleVoiceInput = () => {
-    if (!SpeechRecognition) {
-      alert("❌ Sorry, your browser doesn’t support voice recognition.");
-      return;
-    }
+  // --- Voice input handler (Continuous Call Mode) ---
+const handleVoiceInput = () => {
+  if (!SpeechRecognition) {
+    alert("❌ Sorry, your browser doesn’t support voice recognition.");
+    return;
+  }
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.lang = "en-US";
-    recognition.interimResults = false;
-
-    recognition.start();
-    setIsListening(true);
-
+  // 🎤 If already listening -> stop
+  if (isLiveMode) {
+    setIsLiveMode(false);
+    setIsListening(false);
+    window.speechSynthesis.cancel();
     setMessages((prev) => [
       ...prev,
-      {
-        id: Date.now(),
-        type: "assistant",
-        content: "🎙️ Listening... Please speak your question.",
-      },
+      { id: Date.now(), type: "assistant", content: "🛑 Voice conversation stopped." },
     ]);
+    return;
+  }
 
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript;
+  // Start continuous listening
+  const recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.lang = "en-US";
+  recognition.interimResults = false;
+
+  recognition.start();
+  setIsLiveMode(true);
+  setIsListening(true);
+
+  setMessages((prev) => [
+    ...prev,
+    {
+      id: Date.now(),
+      type: "assistant",
+      content: "🎧 Voice mode activated. I'm listening — say something!",
+    },
+  ]);
+
+  recognition.onresult = async (event) => {
+    const transcript = event.results[event.results.length - 1][0].transcript.trim();
+    console.log("🎙️ Heard:", transcript);
+
+    // 🛑 If user says "stop" — end call
+    if (/stop|thank you|goodbye/i.test(transcript)) {
+      recognition.stop();
+      setIsLiveMode(false);
+      setIsListening(false);
       setMessages((prev) => [
         ...prev,
         { id: Date.now(), type: "user", content: transcript },
+        {
+          id: Date.now() + 1,
+          type: "assistant",
+          content: "👋 Stopping voice conversation. Talk to you soon!",
+        },
       ]);
-      handleSend(transcript);
-      setIsListening(false);
-    };
+      return;
+    }
 
-    recognition.onerror = (event) => {
-      console.error("Voice recognition error:", event.error);
+    // Otherwise, send query
+    setMessages((prev) => [
+      ...prev,
+      { id: Date.now(), type: "user", content: transcript },
+    ]);
+
+    try {
+      const response = await fetch("http://localhost:5000/ask", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: transcript }),
+      });
+
+      const data = await response.json();
+      const aiReply =
+        data.answer ||
+        "⚠️ Sorry, I couldn’t find that information in the document.";
+
+      const botMessage = { id: Date.now(), type: "assistant", content: aiReply };
+      setMessages((prev) => [...prev, botMessage]);
+
+      // 🔊 Speak reply
+      if ("speechSynthesis" in window) {
+        const utterance = new SpeechSynthesisUtterance(aiReply);
+        utterance.lang = "en-US";
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        const voices = window.speechSynthesis.getVoices();
+        const femaleVoice =
+          voices.find((v) =>
+            /female|woman|susan|samantha|karen|zoe|emma|victoria/i.test(v.name)
+          ) || voices.find((v) => v.lang.startsWith("en"));
+        if (femaleVoice) utterance.voice = femaleVoice;
+        window.speechSynthesis.speak(utterance);
+      }
+    } catch (err) {
+      console.error("Voice chat error:", err);
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now(),
           type: "assistant",
-          content: "⚠️ Voice input failed. Please try again.",
+          content: "⚠️ Error during voice response.",
         },
       ]);
-      setIsListening(false);
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-    };
+    }
   };
 
-  // --- Generate summary ---
-  const generateSummary = async () => {
-    const conversation = messages.map((m) => `${m.type}: ${m.content}`).join("\n");
+  recognition.onerror = (event) => {
+    console.error("Voice recognition error:", event.error);
+    setIsListening(false);
+    if (isLiveMode) {
+      recognition.start(); // auto-restart on error
+    }
+  };
+
+  recognition.onend = () => {
+  if (isLiveMode) {
+    setTimeout(() => recognition.start(), 500); // short delay prevents crash loops
+  } else {
+    setIsListening(false);
+  }
+};
+
+};
+  // --- Feedback submission handler ---
+  const handleFeedbackSubmit = async () => {
+    if (!feedback.trim()) {
+      alert("⚠️ Please enter feedback before submitting.");
+      return;
+    }
+
     try {
-      const response = await fetch("http://localhost:5000/summarize", {
+      const response = await fetch("http://localhost:5000/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation }),
+        body: JSON.stringify({ message: feedback }),
       });
-
       const data = await response.json();
-      setSummary(data.summary || "⚠️ Could not generate summary.");
-    } catch (error) {
-      console.error("Summary Error:", error);
-      setSummary("❌ Failed to generate summary. Please check your backend.");
+
+      if (data.success) {
+        setFeedback("");
+        alert("✅ Thank you! Your feedback has been submitted.");
+      } else {
+        alert("⚠️ Failed to send feedback. Please try again later.");
+      }
+    } catch (err) {
+      console.error("Feedback submission error:", err);
+      alert("❌ Could not send feedback. Check your backend connection.");
     }
   };
-
-  useEffect(() => {
-    if (activeTab === "summary") {
-      generateSummary();
-    }
-  }, [activeTab]);
 
   return (
     <>
       {/* Floating Chat Button */}
-      <style>
-        {`
-          @keyframes pulseGlow {
-            0% {
-              box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.7);
-            }
-            70% {
-              box-shadow: 0 0 20px 20px rgba(37, 99, 235, 0);
-            }
-            100% {
-              box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
-            }
-          }
-          .animate-pulse-glow {
-            animation: pulseGlow 2s infinite;
-          }
-        `}
-      </style>
-
       {!isOpen && (
-        <div 
+        <div
           style={{
-            position: 'fixed',
-            bottom: '32px',
-            right: '32px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            zIndex: 9999
+            position: "fixed",
+            bottom: "32px",
+            right: "32px",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            zIndex: 9999,
           }}
         >
-          {/* Tooltip Message */}
-          <div style={{
-            position: 'relative',
-            marginBottom: '12px',
-            backgroundColor: 'white',
-            color: '#334155',
-            padding: '8px 16px',
-            borderRadius: '12px',
-            boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1)',
-            border: '1px solid #e2e8f0',
-            fontSize: '14px',
-            fontWeight: '500',
-            animation: 'fadeIn 0.5s ease-out'
-          }}>
+          <div
+            style={{
+              position: "relative",
+              marginBottom: "12px",
+              backgroundColor: "white",
+              color: "#334155",
+              padding: "8px 16px",
+              borderRadius: "12px",
+              boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1)",
+              border: "1px solid #e2e8f0",
+              fontSize: "14px",
+              fontWeight: "500",
+            }}
+          >
             👋 Hi, I'm Aria,
             <br />
             Click to chat with me!
-            {/* Little arrow below the bubble */}
-            <div style={{
-              position: 'absolute',
-              left: '50%',
-              transform: 'translateX(-50%)',
-              bottom: '-6px',
-              width: '12px',
-              height: '12px',
-              backgroundColor: 'white',
-              borderRight: '1px solid #e2e8f0',
-              borderBottom: '1px solid #e2e8f0',
-              transform: 'translateX(-50%) rotate(45deg)'
-            }}></div>
+            <div
+              style={{
+                position: "absolute",
+                left: "50%",
+                bottom: "-6px",
+                width: "12px",
+                height: "12px",
+                backgroundColor: "white",
+                borderRight: "1px solid #e2e8f0",
+                borderBottom: "1px solid #e2e8f0",
+                transform: "translateX(-50%) rotate(45deg)",
+              }}
+            ></div>
           </div>
-
-          {/* Floating Chat Button */}
-          <button
+              <button
             onClick={() => setIsOpen(true)}
             style={{
-              width: '96px',
-              height: '96px',
-              borderRadius: '50%',
-              backgroundColor: '#1e3a8a',
-              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              overflow: 'hidden',
-              border: '4px solid white',
-              cursor: 'pointer',
-              transition: 'transform 0.3s ease',
-              animation: 'pulseGlow 2s infinite'
+              width: "96px",
+              height: "96px",
+              borderRadius: "50%",
+              backgroundColor: "#1e3a8a",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              border: "4px solid white",
+              cursor: "pointer",
             }}
-            onMouseEnter={(e) => e.target.style.transform = 'scale(1.1)'}
-            onMouseLeave={(e) => e.target.style.transform = 'scale(1)'}
           >
-            <img
-              src="/avatar.png"
-              alt="Assistant Avatar"
+            <video
+              src="/avatar-video.mp4"
+              autoPlay
+              loop
+              muted
+              playsInline
+              preload="auto"
               style={{
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-                borderRadius: '50%'
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                borderRadius: "50%",
+                transition: "transform 0.3s ease",
               }}
+              onMouseEnter={(e) => (e.currentTarget.style.transform = "scale(1.05)")}
+              onMouseLeave={(e) => (e.currentTarget.style.transform = "scale(1)")}
             />
           </button>
+
+         
         </div>
       )}
 
       {/* Chat Window */}
       {isOpen && (
-        <div 
-          style={{
-            position: 'fixed',
-            bottom: '24px',
-            right: '24px',
-            width: '384px',
-            height: '600px',
-            backgroundColor: 'white',
-            borderRadius: '16px',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
-            border: '1px solid #e2e8f0',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
-            zIndex: 9999,
-            animation: 'slideUp 0.3s ease-out'
-          }}
-        >
+          <div
+            style={{
+              position: "fixed",
+              bottom: "34px",
+              right: "30px",
+              width: "425px",
+              height: "580px",
+              backgroundColor: "rgb(49, 121, 224)",
+              borderRadius: "16px",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+              border: "rgba(51, 173, 234, 0.6)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+              zIndex: 9999,
+            }}
+          >
+
           {/* Header */}
-          <div style={{
-            background: 'linear-gradient(90deg, #2563eb, #9333ea)',
-            color: 'white',
-            padding: '12px 16px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between'
-          }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '12px'
-            }}>
-              <img
-                src="/avatar.png"
-                alt="Assistant"
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '50%',
-                  border: '2px solid white'
-                }}
-              />
-              <div>
-                <div style={{ fontWeight: '600' }}>Aria AI</div>
-                <div style={{
-                  fontSize: '12px',
-                  color: '#ddd6fe',
-                  marginTop: '-2px'
-                }}>
-                  Company Assistant
+            <div
+              style={{
+              position: "relative",
+              color: "black",
+              padding: "14px 18px",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              borderTopLeftRadius: "16px",
+              borderTopRightRadius: "16px",
+              boxShadow: "0 4px 10px rgba(0, 0, 0, 0.2)",
+              overflow: "hidden",
+            }}
+            onMouseEnter={(e) =>
+              (e.currentTarget.style.boxShadow =
+                "0 0 20px rgba(147, 51, 234, 0.6)")
+            }
+            onMouseLeave={(e) =>
+              (e.currentTarget.style.boxShadow =
+                "0 4px 10px rgba(0, 0, 0, 0.2)")
+            }
+          >
+            {/* 🔹 Background video */}
+            <video
+              src="/header-bg.mp4"
+              autoPlay
+              loop
+              muted
+              playsInline
+              preload="auto"
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: "cover",
+                zIndex: 0,
+                opacity: 0.4,
+                filter: "blur(1px) brightness(0.9)",
+                pointerEvents: "none", // ✅ allows clicks to pass through!
+              }}
+            />
+
+            {/* 🔹 Foreground content */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                width: "100%",
+                position: "relative",
+                zIndex: 2, // ✅ ensures button and avatar are clickable
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                <video
+                  src="/avatar-video.mp4"
+                  autoPlay
+                  loop
+                  muted
+                  playsInline
+                  preload="auto"
+                  style={{
+                    width: "68px",
+                    height: "68px",
+                    borderRadius: "50%",
+                    border: "2px solid rgba(147, 51, 234, 0.6)",
+                    objectFit: "cover",
+                    boxShadow: "0 0 10px rgba(255, 255, 255, 0.5)",
+                    transition: "transform 0.3s ease, box-shadow 0.3s ease",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = "scale(1.08)";
+                    e.currentTarget.style.boxShadow =
+                      "0 0 20px rgba(255, 255, 255, 0.9)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = "scale(1)";
+                    e.currentTarget.style.boxShadow =
+                      "0 0 10px rgba(255, 255, 255, 0.5)";
+                  }}
+                />
+                <div>
+                  <div
+                    style={{
+                      fontWeight: "700",
+                      fontSize: "20px",
+                      letterSpacing: "0.3px",
+                    }}
+                  >
+                    Aria AI
+                  </div>
+                  <div style={{ fontSize: "13px", color: "#475569" }}>
+                    Company Assistant
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <button
-              onClick={() => setIsOpen(false)}
-              style={{
-                padding: '4px',
-                borderRadius: '4px',
-                border: 'none',
-                background: 'transparent',
-                color: 'white',
-                cursor: 'pointer',
-                transition: 'background-color 0.2s'
-              }}
-              onMouseEnter={(e) => e.target.style.backgroundColor = 'rgba(255, 255, 255, 0.2)'}
-              onMouseLeave={(e) => e.target.style.backgroundColor = 'transparent'}
-            >
-              <X style={{ width: '16px', height: '16px' }} />
-            </button>
+              {/* ✅ Close button now clickable */}
+              <button
+                onClick={() => setIsOpen(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "blue",
+                  cursor: "pointer",
+                  transition: "transform 0.2s ease",
+                  zIndex: 5, // ✅ ensures it’s above everything
+                }}
+                onMouseEnter={(e) =>
+                  (e.currentTarget.style.transform = "rotate(90deg)")
+                }
+                onMouseLeave={(e) =>
+                  (e.currentTarget.style.transform = "rotate(0deg)")
+                }
+              >
+                <X style={{ width: "25px", height: "25px" }} />
+              </button>
+            </div>
           </div>
 
           {/* Chat Area */}
-          <div style={{
-            flex: 1,
-            overflowY: 'auto',
-            padding: '16px',
-            backgroundColor: '#f8fafc'
-          }}>
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: "16px",
+              backgroundColor: "#f8fafc",
+            }}
+          >
             {(activeTab === "chat" || activeTab === "voice") && (
               <>
                 {messages.map((msg) => (
                   <div
                     key={msg.id}
                     style={{
-                      marginBottom: '12px',
-                      textAlign: msg.type === "user" ? "right" : "left"
+                      marginBottom: "12px",
+                      textAlign: msg.type === "user" ? "right" : "left",
                     }}
                   >
                     <div
                       style={{
-                        display: 'inline-block',
-                        padding: '8px 12px',
-                        borderRadius: '16px',
-                        backgroundColor: msg.type === "assistant" ? 'white' : '#2563eb',
-                        border: msg.type === "assistant" ? '1px solid #e2e8f0' : 'none',
-                        color: msg.type === "assistant" ? '#1e293b' : 'white',
-                        maxWidth: '85%',
-                        wordWrap: 'break-word'
+                        display: "inline-block",
+                        padding: "8px 12px",
+                        borderRadius: "16px",
+                        backgroundColor:
+                          msg.type === "assistant" ? "white" : "#2546ebff",
+                        border:
+                          msg.type === "assistant"
+                            ? "1px solid #259feb7c"
+                            : "none",
+                        color:
+                          msg.type === "assistant" ? "#1e293b" : "white",
+                        maxWidth: "85%",
+                        wordWrap: "break-word",
                       }}
                     >
                       {msg.content}
@@ -424,17 +578,12 @@ export default function ChatWidget() {
                       <button
                         onClick={() => handleTextToSpeech(msg.content)}
                         style={{
-                          marginLeft: '8px',
-                          display: 'inline-block',
-                          color: '#94a3b8',
-                          background: 'none',
-                          border: 'none',
-                          cursor: 'pointer',
-                          transition: 'color 0.2s'
+                          marginLeft: "8px",
+                          background: "none",
+                          border: "none",
+                          color: "#25b0eb",
+                          cursor: "pointer",
                         }}
-                        title="Read aloud"
-                        onMouseEnter={(e) => e.target.style.color = '#2563eb'}
-                        onMouseLeave={(e) => e.target.style.color = '#94a3b8'}
                       >
                         {isSpeaking ? <StopCircle size={14} /> : <Volume2 size={14} />}
                       </button>
@@ -443,113 +592,123 @@ export default function ChatWidget() {
                 ))}
 
                 {isTyping && (
-                  <div style={{
-                    color: '#64748b',
-                    fontSize: '14px',
-                    fontStyle: 'italic'
-                  }}>Typing...</div>
+                  <div style={{ color: "#64748b", fontSize: "14px" }}>Typing...</div>
                 )}
-
                 {isListening && (
-                  <div style={{
-                    fontSize: '14px',
-                    color: '#2563eb',
-                    fontStyle: 'italic',
-                    marginTop: '8px'
-                  }}>
-                    🎧 Listening...
-                  </div>
-                )}
-
-                {/* ✅ Suggested Questions */}
-                {showSuggestions && messages.length <= 2 && (
-                  <div style={{ marginTop: '12px' }}>
-                    <p style={{
-                      fontSize: '14px',
-                      color: '#64748b',
-                      marginBottom: '8px'
-                    }}>
-                      Suggested questions:
-                    </p>
-                    <div style={{
-                      display: 'flex',
-                      flexWrap: 'wrap',
-                      gap: '8px'
-                    }}>
-                      {[
-                        "What services does Tekisho offer?",
-                      ].map((q, index) => (
-                        <button
-                          key={index}
-                          onClick={() => handleSuggestedQuestion(q)}
-                          style={{
-                            padding: '8px 12px',
-                            backgroundColor: '#f1f5f9',
-                            color: '#374151',
-                            fontSize: '14px',
-                            borderRadius: '8px',
-                            border: '1px solid #e2e8f0',
-                            cursor: 'pointer',
-                            transition: 'background-color 0.2s'
-                          }}
-                          onMouseEnter={(e) => e.target.style.backgroundColor = '#dbeafe'}
-                          onMouseLeave={(e) => e.target.style.backgroundColor = '#f1f5f9'}
-                        >
-                          {q}
-                        </button>
-                      ))}
-                      <button
-                        onClick={() => setShowSuggestions(false)}
-                        style={{
-                          padding: '8px 12px',
-                          backgroundColor: '#2563eb',
-                          color: 'white',
-                          fontSize: '14px',
-                          borderRadius: '8px',
-                          border: '1px solid #1d4ed8',
-                          cursor: 'pointer',
-                          transition: 'background-color 0.2s'
-                        }}
-                        onMouseEnter={(e) => e.target.style.backgroundColor = '#1d4ed8'}
-                        onMouseLeave={(e) => e.target.style.backgroundColor = '#2563eb'}
-                      >
-                        Other
-                      </button>
-                    </div>
-                  </div>
+                  <div style={{ color: "#2563eb", fontSize: "14px" }}>🎧 Listening...</div>
                 )}
               </>
             )}
+            {showSuggestions && activeTab === "chat" && (
+  <div
+    style={{
+      display: "flex",
+      flexWrap: "wrap",
+      gap: "10px",
+      marginTop: "16px",
+      justifyContent: "flex-start",
+    }}
+  >
+    {suggestedQuestions.map((q, index) => (
+      <button
+        key={index}
+        onClick={() => handleSend(q)}
+        style={{
+          padding: "10px 16px",
+          borderRadius: "12px",
+          border: "1px solid rgba(255,255,255,0.2)",
+          background:
+            "linear-gradient(145deg, rgba(255,255,255,0.1), rgba(0,0,0,0.05))",
+          boxShadow:
+            "0 2px 4px rgba(0,0,0,0.1), inset 0 1px 1px rgba(255,255,255,0.2)",
+          color: "#1e598aff",
+          fontSize: "14px",
+          fontWeight: 500,
+          letterSpacing: "0.3px",
+          cursor: "pointer",
+          transition: "all 0.25s ease",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.background =
+            "linear-gradient(145deg, #e0e7ff, #c7d2fe)";
+          e.currentTarget.style.transform = "translateY(-2px)";
+          e.currentTarget.style.boxShadow =
+            "0 4px 10px rgba(59, 131, 246, 0.01)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.background =
+            "linear-gradient(145deg, rgba(255,255,255,0.1), rgba(0,0,0,0.05))";
+          e.currentTarget.style.transform = "translateY(0)";
+          e.currentTarget.style.boxShadow =
+            "0 2px 4px rgba(0,0,0,0.1), inset 0 1px 1px rgba(255,255,255,0.2)";
+        }}
+      >
+        {q}
+      </button>
+    ))}
+  </div>
+)}
+
+
 
             {/* Feedback Tab */}
             {activeTab === "feedback" && (
-              <div style={{
-                fontSize: '14px',
-                color: '#374151',
-                whiteSpace: 'pre-wrap'
-              }}>
-                <h3 style={{
-                  fontWeight: '600',
-                  marginBottom: '8px',
-                  color: '#1d4ed8'
-                }}>
-                  💬 Share Your Feedback:
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  padding: "16px",
+                  gap: "12px",
+                }}
+              >
+                <h3 style={{ fontWeight: "600", color: "#1d4ed8" }}>
+                  💬 Share Your Feedback
                 </h3>
-                {feedback}
+
+                <textarea
+                  value={feedback}
+                  onChange={(e) => setFeedback(e.target.value)}
+                  placeholder="Please share your thoughts..."
+                  rows={5}
+                  style={{
+                    border: "1px solid #d1d5db",
+                    borderRadius: "12px",
+                    padding: "12px",
+                    fontSize: "14px",
+                    resize: "none",
+                    outline: "none",
+                  }}
+                />
+
+                <button
+                  onClick={handleFeedbackSubmit}
+                  style={{
+                    backgroundColor: "#2563eb",
+                    color: "white",
+                    border: "none",
+                    borderRadius: "8px",
+                    padding: "10px 16px",
+                    cursor: "pointer",
+                  }}
+                >
+                  Submit Feedback
+                </button>
               </div>
             )}
 
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Input Area (only for Chat tab) */}
+          {/* Input Area (Chat only) */}
           {activeTab === "chat" && !showSuggestions && (
-            <div style={{
-              borderTop: '1px solid #e2e8f0',
-              padding: '12px',
-              display: 'flex',
-              gap: '8px'
-            }}>
+            <div
+              style={{
+                borderTop: "1px solid #e2e8f0",
+                padding: "12px",
+                display: "flex",
+                gap: "8px",
+              }}
+            >
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -563,149 +722,98 @@ export default function ChatWidget() {
                 rows={1}
                 style={{
                   flex: 1,
-                  border: '1px solid #d1d5db',
-                  borderRadius: '12px',
-                  padding: '8px 12px',
-                  fontSize: '14px',
-                  resize: 'none',
-                  outline: 'none',
-                  fontFamily: 'inherit'
+                  border: "1px solid #d1d5db",
+                  borderRadius: "12px",
+                  padding: "8px 12px",
+                  fontSize: "14px",
+                  resize: "none",
                 }}
               />
               <button
                 onClick={() => handleSend()}
                 disabled={!input.trim()}
                 style={{
-                  backgroundColor: input.trim() ? '#2563eb' : '#d1d5db',
-                  borderRadius: '50%',
-                  padding: '8px',
-                  border: 'none',
-                  cursor: input.trim() ? 'pointer' : 'not-allowed',
-                  transition: 'background-color 0.2s'
-                }}
-                onMouseEnter={(e) => {
-                  if (input.trim()) e.target.style.backgroundColor = '#1d4ed8';
-                }}
-                onMouseLeave={(e) => {
-                  if (input.trim()) e.target.style.backgroundColor = '#2563eb';
+                  backgroundColor: input.trim() ? "#2563eb" : "#d1d5db",
+                  borderRadius: "50%",
+                  padding: "8px",
+                  border: "none",
+                  cursor: input.trim() ? "pointer" : "not-allowed",
                 }}
               >
-                <Send style={{ width: '16px', height: '16px', color: 'white' }} />
+                <Send style={{ width: "16px", height: "16px", color: "white" }} />
               </button>
             </div>
           )}
 
           {/* Bottom Tabs */}
-          <div style={{
-            borderTop: '1px solid #e2e8f0',
-            backgroundColor: 'white',
-            display: 'flex',
-            justifyContent: 'space-around',
-            padding: '8px 0',
-            color: '#64748b',
-            fontSize: '14px'
-          }}>
-            <button
+          <div
+            style={{
+              borderTop: "1px solid #e2e8f0",
+              backgroundColor: "white",
+              display: "flex",
+              justifyContent: "space-around",
+              padding: "8px 0",
+              color: "#64748b",
+              fontSize: "14px",
+            }}
+          >
+              <button
+  style={{
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    background: "none",
+    border: "none",
+    cursor: "pointer",
+    color: activeTab === "chat" ? "#2563eb" : "#64748b",
+  }}
+  onClick={() => {
+    setActiveTab("chat");
+    setShowSuggestions(false); // 👈 Force text box to show
+  }}
+>
+  <MessageSquare size={22} />
+  Chat
+</button>
+
+              <button
               style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                color: activeTab === "chat" ? "#2563eb" : "#64748b",
-                transition: 'color 0.2s'
-              }}
-              onClick={() => setActiveTab("chat")}
-            >
-              <MessageSquare size={18} />
-              Chat
-            </button>
-            <button
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                color: activeTab === "voice" ? "#2563eb" : "#64748b",
-                transition: 'color 0.2s'
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                color: isLiveMode ? "#ef4444" : activeTab === "voice" ? "#2563eb" : "#64748b",
+                transition: "color 0.3s ease",
+                animation: isLiveMode ? "pulse 1.2s infinite" : "none",
               }}
               onClick={() => {
                 setActiveTab("voice");
                 handleVoiceInput();
-              }}>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                width="26"
-                height="26"
-                viewBox="0 0 64 64"
-              >
-                {/* Chatbot head */}
-                <rect
-                  x="10"
-                  y="22"
-                  width="44"
-                  height="30"
-                  rx="8"
-                  ry="8"
-                  stroke="#1e3a8a"
-                  strokeWidth="3"
-                  fill="none"
-                />
-                {/* Eyes */}
-                <circle cx="24" cy="37" r="3" fill="#1e3a8a" />
-                <circle cx="40" cy="37" r="3" fill="#1e3a8a" />
-                {/* Smile */}
-                <path
-                  d="M24 45c4 3 12 3 16 0"
-                  stroke="#1e3a8a"
-                  strokeWidth="3"
-                  fill="none"
-                  strokeLinecap="round"
-                />
-                {/* Antenna */}
-                <line x1="32" y1="18" x2="32" y2="10" stroke="#1e3a8a" strokeWidth="3" />
-                <circle cx="32" cy="7" r="2.5" fill="#3b82f6" />
-                {/* Speech bubble */}
-                <path
-                  d="M45 10h10a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3l-4 4v-4h-3a4 4 0 0 1-4-4v-6a4 4 0 0 1 4-4z"
-                  stroke="#3b82f6"
-                  strokeWidth="2"
-                  fill="none"
-                />
-                {/* 🎤 Mic inside the speech bubble */}
-                <path
-                  d="M52 13v4a2 2 0 0 1-4 0v-4a2 2 0 0 1 4 0z"
-                  fill="#3b82f6"
-                />
-                <path
-                  d="M48 18a3 3 0 0 0 6 0"
-                  stroke="#3b82f6"
-                  strokeWidth="1.5"
-                  fill="none"
-                  strokeLinecap="round"
-                />
-                <line x1="51" y1="21" x2="51" y2="22" stroke="#3b82f6" strokeWidth="1.5" />
-              </svg>
-
-              Voice
+              }}
+            >
+              {isLiveMode ? <MicOff size={26} /> : <Mic size={26} />}
+              <span style={{ fontSize: "12px", marginTop: "4px" }}>
+                {isLiveMode ? "Stop" : "Voice"}
+              </span>
             </button>
+
+
+
             <button
               style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
                 color: activeTab === "feedback" ? "#2563eb" : "#64748b",
-                transition: 'color 0.2s'
               }}
               onClick={() => setActiveTab("feedback")}
             >
-              <FileText size={18} />
+              <FileText size={22} />
               Feedback
             </button>
           </div>
