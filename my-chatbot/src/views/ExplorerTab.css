@@ -1,0 +1,92 @@
+.explorer-container {
+  padding: 20px;
+  color: black;
+  font-family: "Inter", sans-serif;
+}
+
+.explorer-title {
+  font-size: 1.6rem;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+.explorer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.explorer-section {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: hidden;
+  transition: 0.3s ease;
+}
+
+.explorer-header {
+  padding: 15px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.explorer-header:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.explorer-header-text {
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.explorer-subtitle {
+  margin-left: 10px;
+  opacity: 0.7;
+}
+
+.explorer-arrow {
+  font-size: 1.2rem;
+}
+
+.explorer-items {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 10px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.explorer-item {
+  font-size: 0.95rem;
+  opacity: 0.9;
+  cursor: pointer;
+}
+
+.explorer-item:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
+
+/* Video inside list items for LEADQ.AI */
+.leadq-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.item-video {
+  width: 320px;
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  background: #000;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
+}
+
+.leadq-label {
+  font-size: 0.95rem;
+  color: inherit;
+  opacity: 0.95;
+}
